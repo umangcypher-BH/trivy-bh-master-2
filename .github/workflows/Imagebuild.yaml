@@ -7,11 +7,11 @@ on:
     inputs:
       tag:
         type: string
-        description: image tag 
+        description: image_tag 
         required: true
 jobs:
   build:
-     uses: umangcypher-BH/TRIVY-TESTING/.github/workflows/docker-image-build-scan-push-github.yaml@master
+     uses: umangcypher-BHTESTING-TRIVY/.github/workflows/docker-image-build-scan-push-github.yaml@master
      with:
       # Container Image Name // update it as per project name.
       image_name: "trivy-test"
