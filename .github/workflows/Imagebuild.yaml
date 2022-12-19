@@ -25,4 +25,4 @@ jobs:
       image_tag: ${{ github.event.inputs.tag }}
       # GH Username 
       username: 'umangcypher-BH'
-      secrets: ${{ secrets.INHERIT }}
+      secrets: INHERIT
