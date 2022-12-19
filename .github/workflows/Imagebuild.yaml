@@ -2,16 +2,16 @@ name: docker image build
 on:
   push:
     branches:
-      - master
+      - ' master '
   workflow_dispatch:
     inputs:
       tag:
         type: string
-        description: image tag
+        description: image tag 
         required: true
 jobs:
   build:
-     uses: umangcypher-BH/TESTING-TRIVY/.github/workflows/docker-image-build-scan-push-github.yaml@master
+     uses: umangcypher-BH/TRIVY-TESTING/.github/workflows/docker-image-build-scan-push-github.yaml@master
      with:
       # Container Image Name // update it as per project name.
       image_name: "trivy-test"
