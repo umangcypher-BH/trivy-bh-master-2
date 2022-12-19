@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  CodeBuildSGs:
+    Description: Must be at least one security group in the CICD account VPC
+    Type: String
+    AllowedPattern: "^[a-zA-Z0-9-]*$"
+    Default: "sg-0ff44ac89dc199478"
+  'ECRReponame':
+    'Description': 'ECR Repository Name'
+    'Type': 'String' 
+    'AllowedValues':
+    - 'brinqa-cronjob'
+    - 'brinqa-apache'
+    - 'brinqa-agent'
+  AppName:
+    Type: String
+    Description: Name of App
+    Default: "brinqa"
+  ReleaseID:
+    Type: String
+    Description: "Docker Image tag"
+    Default: "v3.0"
+  TrivyVersion:
+    Type: String
+    Description: "Latest Version of Trivy"
+    Default: "v0.31.3"
+  TRIVY_BUCKET:
+    Type: String
+    Description: "Bucket Name of trivy polices"
+    Default: "540026473009-us-east-1-brinqa-bucket-src"
+  TRIVY_REPORT_BUCKET:
+    Type: String
+    Description: "Bucket name to store Trivy report in same aws account"
+    Default: "540026473009-us-east-1-brinqa-bucket-src"
+  Packages_lock:
+    Type: String
+    Description: "Path of Packages files for dependency (trivy will look for vulnerabilities based on lock files such as Gemfile.lock and package-lock.json)"
+    Default: "."    
+  ClusterName:
+    Type: String
+  UpdateParameter:
+    Type: String  
+Resources:
+  VPCLookupAfter:
+    Type: Custom::VPCLookup
+    Properties:
+      ServiceToken: !Join
+        - ':'
+        - - 'arn:aws:lambda'
+          - !Ref AWS::Region
+          - !Ref AWS::AccountId
+          - 'BHCHelperLambdaUtilities'
+      method: vpc_lookup
+  BuildandPublishImage:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      VpcConfig:
+        SecurityGroupIds: !Split [",", !Ref CodeBuildSGs]
+        Subnets:
+          - !Select [ "0", !GetAtt VPCLookupAfter.VPCSubnets]
+          - !Select [ "1", !GetAtt VPCLookupAfter.VPCSubnets]
+        VpcId: !GetAtt VPCLookupAfter.VPCId
+      Artifacts:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 60
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - $(aws ecr get-login --no-include-email)
+                - TAG="${Release_ID}"
+                - IMAGE_URI="${REPOSITORY_URI}:${TAG}"
+                - SCAN_DATE=$(date +"%d-%b-%Y-%H")
+                - Work_DIR=$(pwd)
+            build:
+              commands:
+                - pwd
+                - ls
+                - cd "${ECRReponame}/docker"
+                - docker build --tag "${IMAGE_URI}" .
+            image_Scan:
+              commands:
+                - docker image ls
+                - aws s3 cp s3://${TRIVY_BUCKET}/shared-workflows-master.zip .
+                - unzip  shared-workflows-master.zip
+                - cp Dockerfile ./shared-workflows-master/configs
+                - echo "Install trivy"
+                - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /bin "${Trivy_Version}"
+                - echo "downloading  vulnerability database"
+                - trivy image --download-db-only
+                - trivy image --format template --template "@./shared-workflows-master/html.tpl" --ignorefile "./shared-workflows-master/.trivyignore" -o "${ECRReponame}-${SCAN_DATE}.html" "${REPOSITORY_URI}:${TAG}"
+                - trivy fs  --format template --template "@./shared-workflows-master/html.tpl" --ignorefile "./shared-workflows-master/.trivyignore" -o Report.html ${Packages_lock}'   
+                - trivy conf    --policy ./shared-workflows-master/policies --format template --template "@./shared-workflows-master/html.tpl" --ignorefile "./shared-workflows/.trivyignore"  -o  Report1.html --namespaces user ./shared-workflows-master/configs                
+                - cat Report1.html >> Report.html; cat Report.html >>"${ECRReponame}-${SCAN_DATE}.html"
+                - echo "Uploading Reports to \n\n\ns3://${ANCHORE_REPORT_BUCKET}/Reports/ "
+                - aws s3 cp "${ECRReponame}-${SCAN_DATE}.html" s3://${TRIVY_REPORT_BUCKET}/Reports/
+                - echo "Check for CRITICAL & HIGH Vulnerabilities\n\n\n\n."
+                - trivy image --no-progress --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --ignorefile "./shared-workflows-master/.trivyignore"  "${REPOSITORY_URI}:${TAG}"
+                - trivy fs  -exit-code 1 --severity CRITICAL,HIGH --format template --template "@./shared-workflows-master/html.tpl" --ignorefile "./shared-workflows-master/.trivyignore" -o Report.html ${Packages_lock}'
+                - trivy conf  --exit-code 1 --severity CRITICAL  --policy ./shared-workflows-master/policies  --ignorefile "./shared-workflows-master/.trivyignore" --namespaces user ./shared-workflows-master/configs             
+            post_build:
+              commands:   
+                - echo "Push Image to ${REPOSITORY_URI}"
+                - docker image push "${REPOSITORY_URI}:${TAG}"
+                - IMAGES_TO_DELETE=$( aws ecr list-images --region ${AWS_DEFAULT_REGION} --repository-name ${ECRReponame} --filter "tagStatus=UNTAGGED" --query 'imageIds[*]' --output json )
+                - aws ecr batch-delete-image --region ${AWS_DEFAULT_REGION} --repository-name ${ECRReponame} --image-ids "$IMAGES_TO_DELETE" || true        
+                - printf '[{"name":"simple-app","imageUri":"%s"}]' "$IMAGE_URI" > images.json         
+          artifacts:
+            files: images.json
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/docker:17.09.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: Release_ID
+            Value: !Ref ReleaseID
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: REPOSITORY_URI
+            Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRReponame}
+          - Name: TRIVY_BUCKET
+            Value: !Ref TRIVY_BUCKET
+          - Name: TRIVY_REPORT_BUCKET
+            Value:  !Ref TRIVY_REPORT_BUCKET
+          - Name: Packages_lock
+            Value:  !Ref Packages_lock
+          - Name: Trivy_Version
+            Value: !Ref TrivyVersion
+          - Name: ECRReponame
+            Value: !Sub ${ECRReponame}
+          - Name: SCAN_TIMEOUT
+            Value: 1200
+          - Name: CLUSTER_NAME
+            Value: !Sub ${ClusterName}
+          - Name: UpdateParameter
+            Value: !Ref UpdateParameter        
+      Cache:
+        Type: LOCAL
+        Modes:
+          - LOCAL_DOCKER_LAYER_CACHE
+      Name: !Sub "CodeBuildJob-trivy-${ECRReponame}"
+      ServiceRole: !Sub 'arn:aws:iam::${AWS::AccountId}:role/CICD-Deployment-Role' 
+  
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${ECRReponame}-trivi-CodePipeline
+      RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/CICD-PipelineService-Role'
+      ArtifactStore:
+        Type: S3
+        Location: !Sub ${AWS::AccountId}-us-east-1-brinqa-bucket-src
+      Stages:
+        - Name: SourceStageCodeCommit
+          Actions:
+            - Name: TemplateSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                S3Bucket: !Sub ${AWS::AccountId}-us-east-1-brinqa-bucket-src
+                PollForSourceChanges: True
+                S3ObjectKey: !Sub ${AppName}/${ECRReponame}.zip
+              OutputArtifacts:
+                - Name: SourceArtifacts
+              RunOrder: 1
+        - Name: BuildAndPublishImage
+          Actions:
+            - Name: BuildImage
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref BuildandPublishImage
+              InputArtifacts:
+                - Name: SourceArtifacts
+              OutputArtifacts: []
+              RunOrder: 1
+Outputs:
+  'UpdateParameter':
+    'Description': 'UpdateParameter'
+    'Value':
+      'Ref': 'UpdateParameter'
+'Rules': {}

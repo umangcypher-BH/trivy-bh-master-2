@@ -1,0 +1,28 @@
+name: Docker Image Build
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        description: image tag
+        required: true
+jobs:
+  build:
+    uses: BH-Corporate-Functions/shared-workflows/.github/workflows/docker-image-build-scan-push-github.yaml@master
+    with:
+      # Container Image Name // update it as per project name.
+      image_name: "trivy-test"
+      # Repo Name
+      GHCR_REPO: "ghcr.io/bh-corporate-functions/trivy-bh"
+      # Path to the Dockerfile. (default {context}/Dockerfile)
+      docker_file_path: "."
+      # "location of lock file in git repository (Trivy will look for vulnerabilities based on lock files such as Gemfile.lock and package-lock.json)"  
+      Packages_lock: "."
+      # Image Tag
+      image_tag: ${{ github.event.inputs.tag }}
+      # GH Username 
+      username: 'kumaani07-bh'
+    secrets: inherit
