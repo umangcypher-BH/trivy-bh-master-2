@@ -14,7 +14,7 @@ jobs:
      uses: umangcypher-BHTESTING-TRIVY/.github/workflows/docker-image-build-scan-push-github.yaml@master
      with:
       # Container Image Name // update it as per project name.
-      image_name: "trivy-test"
+      image_name: "trivyscan"
       # Repo Name
       GHCR_REPO: "ghcr.io/umangcypher-BH/trivy-bh-master-2"
       # Path to the Dockerfile. (default {context}/Dockerfile)
